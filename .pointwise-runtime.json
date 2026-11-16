@@ -2,6 +2,6 @@
   "version": 1,
   "kind": "cli",
   "setup": [],
-  "verify": ["python3.11", "-B", "verify_import.py", "baseline"],
+  "verify": ["python3.11", "-B", "verify_import.py", "target"],
   "demo": ["python3.11", "-B", "import_bench.py", "demo"]
 }

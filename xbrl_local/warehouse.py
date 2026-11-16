@@ -68,6 +68,18 @@ class Warehouse:
             raise QualificationError(issues)
         rows.sort(key=lambda row: row['id'])
         fingerprint = hashlib.sha256(_json([taxonomy.digest, rows]).encode('utf-8')).hexdigest()
+        return self.publish_stream(dataset, batch_id, taxonomy.digest, fingerprint,
+                                   ((row['id'], _json(row)) for row in rows))
+
+    def publish_stream(self, dataset, batch_id, taxonomy_digest, fingerprint, rows):
+        """Publish pre-sorted ``(fact_id, payload)`` pairs in one transaction.
+
+        ``rows`` must already be in ascending ``fact_id`` order and its payloads
+        must reproduce the canonical encoding, exactly as in ``ingest``.  The
+        iterable is consumed lazily so a file import never materializes all rows.
+        """
+        if not isinstance(dataset, str) or not dataset.strip() or not isinstance(batch_id, str) or not batch_id.strip():
+            raise InputError('dataset and batch_id must be nonempty strings')
         db = self._db
         db.execute('BEGIN IMMEDIATE')
         try:
@@ -79,19 +91,18 @@ class Warehouse:
                 result = Receipt(dataset, batch_id, prior[1])
             else:
                 pinned = db.execute('SELECT taxonomy FROM datasets WHERE name=?', (dataset,)).fetchone()
-                if pinned is not None and pinned[0] != taxonomy.digest:
+                if pinned is not None and pinned[0] != taxonomy_digest:
                     raise ConflictError('dataset taxonomy differs')
-                db.execute('INSERT OR IGNORE INTO datasets VALUES (?, ?)', (dataset, taxonomy.digest))
+                db.execute('INSERT OR IGNORE INTO datasets VALUES (?, ?)', (dataset, taxonomy_digest))
                 inserted = 0
-                for row in rows:
-                    payload = _json(row)
+                for fact_id, payload in rows:
                     old = db.execute('SELECT payload FROM facts WHERE dataset=? AND fact_id=?',
-                                     (dataset, row['id'])).fetchone()
+                                     (dataset, fact_id)).fetchone()
                     if old is not None:
                         if old[0] != payload:
-                            raise ConflictError('fact identity conflict: ' + row['id'])
+                            raise ConflictError('fact identity conflict: ' + fact_id)
                     else:
-                        db.execute('INSERT INTO facts VALUES (?, ?, ?)', (dataset, row['id'], payload))
+                        db.execute('INSERT INTO facts VALUES (?, ?, ?)', (dataset, fact_id, payload))
                         inserted += 1
                 db.execute('INSERT INTO batches VALUES (?, ?, ?, ?)', (dataset, batch_id, fingerprint, inserted))
                 result = Receipt(dataset, batch_id, inserted)

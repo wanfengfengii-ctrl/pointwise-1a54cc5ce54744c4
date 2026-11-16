@@ -3,7 +3,8 @@ from dataclasses import asdict
 import json
 import sys
 import sqlite3
-from . import Taxonomy, Instance, Warehouse, InputError, QualificationError
+from . import Taxonomy, Warehouse, InputError, QualificationError
+from .stream_import import prepare_file
 
 
 def main(argv=None):
@@ -21,11 +22,16 @@ def main(argv=None):
     try:
         if args.command == 'import':
             taxonomy = Taxonomy.from_file(args.taxonomy)
-            instance = Instance.from_file(args.instance)
-        with Warehouse(args.db) as warehouse:
-            if args.command == 'import':
-                result = asdict(warehouse.ingest(args.dataset, args.batch, taxonomy, instance))
-            else:
+            # Parse, validate and stage the whole file before touching the
+            # warehouse, so input failures cannot leave any business state.
+            # Qualification then runs before the publishing transaction, which
+            # mirrors the object path's ordering of parse and ingest errors.
+            with prepare_file(args.instance, taxonomy) as prepared:
+                with Warehouse(args.db) as warehouse:
+                    result = asdict(prepared.publish(
+                        warehouse, args.dataset, args.batch, taxonomy))
+        else:
+            with Warehouse(args.db) as warehouse:
                 result = warehouse.read(args.dataset)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

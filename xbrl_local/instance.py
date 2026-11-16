@@ -55,6 +55,69 @@ class Fact:
     decimals: str
 
 
+def parse_context(element, identity, scopes):
+    """Validate one context element and return its immutable Context."""
+    _only(element, {tag(I, 'entity'), tag(I, 'period'), tag(I, 'scenario')})
+    entity = _one(element, tag(I, 'entity'))
+    _only(entity, {tag(I, 'identifier'), tag(I, 'segment')})
+    identifier = _one(entity, tag(I, 'identifier'))
+    scheme, name = required(identifier, 'scheme'), _text(identifier)
+    period = _one(element, tag(I, 'period'))
+    _only(period, {tag(I, 'instant'), tag(I, 'startDate'), tag(I, 'endDate')})
+    if len(period) == 1 and period[0].tag == tag(I, 'instant'):
+        time = 'instant:' + _day(period[0])
+    elif len(period) == 2 and {c.tag for c in period} == {tag(I, 'startDate'), tag(I, 'endDate')}:
+        start = _day(_one(period, tag(I, 'startDate')))
+        end = _day(_one(period, tag(I, 'endDate')))
+        if start > end:
+            raise InputError('reversed period')
+        time = 'duration:' + start + '/' + end
+    else:
+        raise InputError('unsupported period')
+    parts = []
+    for parent, part in ((entity, 'segment'), (element, 'scenario')):
+        containers = parent.findall(tag(I, part))
+        if len(containers) > 1:
+            raise InputError('duplicate context container')
+        members = {}
+        if containers:
+            _only(containers[0], {tag(D, 'explicitMember')})
+            for member in containers[0]:
+                dimension = qname(required(member, 'dimension'), member, scopes)
+                if dimension in members:
+                    raise InputError('duplicate explicit dimension')
+                members[dimension] = qname(_text(member), member, scopes)
+        parts.append(tuple(sorted(members.items())))
+    if set(dict(parts[0])) & set(dict(parts[1])):
+        raise InputError('dimension repeated across context containers')
+    return Context(identity, scheme, name, time, *parts)
+
+
+def parse_unit(element, scopes):
+    """Validate one unit element and return its expanded measure QName."""
+    _only(element, {tag(I, 'measure')})
+    measure = _one(element, tag(I, 'measure'))
+    return qname(_text(measure), measure, scopes)
+
+
+def parse_fact(element):
+    """Validate one fact element; return its raw, still-unresolved fields."""
+    if not element.tag.startswith('{') or element.tag.startswith('{' + I + '}'):
+        raise InputError('unsupported fact element')
+    if set(element.attrib) - {'id', 'contextRef', 'unitRef', 'decimals'}:
+        raise InputError('unsupported fact attribute')
+    identity = required(element, 'id')
+    context = required(element, 'contextRef')
+    unit = required(element, 'unitRef')
+    value = _text(element)
+    decimals = element.get('decimals', 'INF')
+    if not re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)', value):
+        raise InputError('expected finite decimal fact')
+    if decimals != 'INF' and not re.fullmatch(r'[+-]?[0-9]+', decimals):
+        raise InputError('invalid decimals')
+    return identity, element.tag, context, unit, value, decimals
+
+
 @dataclass(frozen=True)
 class Instance:
     contexts: object
@@ -74,64 +137,17 @@ class Instance:
                 raise InputError('duplicate XML id ' + identity)
             ids.add(identity)
             if element.tag == tag(I, 'context'):
-                _only(element, {tag(I, 'entity'), tag(I, 'period'), tag(I, 'scenario')})
-                entity = _one(element, tag(I, 'entity'))
-                _only(entity, {tag(I, 'identifier'), tag(I, 'segment')})
-                identifier = _one(entity, tag(I, 'identifier'))
-                scheme, name = required(identifier, 'scheme'), _text(identifier)
-                period = _one(element, tag(I, 'period'))
-                _only(period, {tag(I, 'instant'), tag(I, 'startDate'), tag(I, 'endDate')})
-                if len(period) == 1 and period[0].tag == tag(I, 'instant'):
-                    time = 'instant:' + _day(period[0])
-                elif len(period) == 2 and {c.tag for c in period} == {tag(I, 'startDate'), tag(I, 'endDate')}:
-                    start = _day(_one(period, tag(I, 'startDate')))
-                    end = _day(_one(period, tag(I, 'endDate')))
-                    if start > end:
-                        raise InputError('reversed period')
-                    time = 'duration:' + start + '/' + end
-                else:
-                    raise InputError('unsupported period')
-                parts = []
-                for parent, part in ((entity, 'segment'), (element, 'scenario')):
-                    containers = parent.findall(tag(I, part))
-                    if len(containers) > 1:
-                        raise InputError('duplicate context container')
-                    members = {}
-                    if containers:
-                        _only(containers[0], {tag(D, 'explicitMember')})
-                        for member in containers[0]:
-                            dimension = qname(required(member, 'dimension'), member, scopes)
-                            if dimension in members:
-                                raise InputError('duplicate explicit dimension')
-                            members[dimension] = qname(_text(member), member, scopes)
-                    parts.append(tuple(sorted(members.items())))
-                if set(dict(parts[0])) & set(dict(parts[1])):
-                    raise InputError('dimension repeated across context containers')
-                contexts[identity] = Context(identity, scheme, name, time, *parts)
+                contexts[identity] = parse_context(element, identity, scopes)
             elif element.tag == tag(I, 'unit'):
-                _only(element, {tag(I, 'measure')})
-                measure = _one(element, tag(I, 'measure'))
-                units[identity] = qname(_text(measure), measure, scopes)
+                units[identity] = parse_unit(element, scopes)
         facts = []
         for element in root:
             if element.tag in (tag(I, 'context'), tag(I, 'unit')):
                 continue
-            if not element.tag.startswith('{') or element.tag.startswith('{' + I + '}'):
-                raise InputError('unsupported fact element')
-            if set(element.attrib) - {'id', 'contextRef', 'unitRef', 'decimals'}:
-                raise InputError('unsupported fact attribute')
-            identity = required(element, 'id')
-            context = required(element, 'contextRef')
-            unit = required(element, 'unitRef')
-            value = _text(element)
-            decimals = element.get('decimals', 'INF')
-            if not re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)', value):
-                raise InputError('expected finite decimal fact')
-            if decimals != 'INF' and not re.fullmatch(r'[+-]?[0-9]+', decimals):
-                raise InputError('invalid decimals')
+            identity, metric, context, unit, value, decimals = parse_fact(element)
             if context not in contexts or unit not in units:
                 raise InputError('unresolved context or unit')
-            facts.append(Fact(identity, element.tag, context, units[unit], value, decimals))
+            facts.append(Fact(identity, metric, context, units[unit], value, decimals))
         if not facts:
             raise InputError('empty fact batch')
         return cls(MappingProxyType(contexts), tuple(facts))

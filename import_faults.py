@@ -63,7 +63,10 @@ def wrap_open(original):
 
 def sql_fault(connection, sql):
     text = sql.lstrip().upper()
-    if MODE == 'commit' and text.startswith('COMMIT'):
+    # The optimized import stages rows in a scratch SQLite database under
+    # TMPDIR before publishing.  A commit probe must target the durable
+    # warehouse commit, not a staging checkpoint, so skip scratch connections.
+    if MODE == 'commit' and not connection.temporary and text.startswith('COMMIT'):
         trip()
     if connection.temporary and MODE in ('temp-read', 'temp-write'):
         is_read = text.startswith(('SELECT', 'WITH'))

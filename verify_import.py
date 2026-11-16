@@ -15,6 +15,8 @@ if __name__ == '__main__':
         [sys.executable, '-B', 'scenarios/qualification.py'],
         [sys.executable, '-B', 'demo.py'],
         [sys.executable, '-B', 'import_checks.py'],
+        [sys.executable, '-B', 'staging_checks.py'],
+        [sys.executable, '-B', 'compare_import.py'],
         [sys.executable, '-B', 'import_bench.py',
          'reference' if args.mode == 'baseline' else 'target'],
     ):
